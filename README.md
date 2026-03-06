@@ -85,6 +85,10 @@
 - **HunyuanVideo 1.5 部署实践**：SageAttention + torch.compile + 特征缓存 + pipeline offloading → [单卡 RTX 4090 可跑 720p 121帧，峰值显存仅 13.6GB](https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5)
 - **[Open-Sora 2.0](https://arxiv.org/html/2503.09642v3)** — 20万美元训练商业级视频模型，强调推理效率
 
+## 框架对比
+
+- [FastGen vs FastVideo 对比分析](docs/fastgen-vs-fastvideo.md) — 工程落地选 FastVideo，蒸馏研究选 FastGen，极致性能两者组合
+
 ## 推荐加速组合
 
 最容易出效果的组合（可叠加）：
