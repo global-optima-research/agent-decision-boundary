@@ -45,7 +45,7 @@
 
 > 详细技术演进、CD vs CT vs 对抗蒸馏对比、各方法架构图和横向对比见 [docs/01-step-distillation.md](docs/01-step-distillation.md)
 
-## 2. 特征缓存 (Feature Caching)
+## 2. 特征缓存 (Feature Caching) — [深入调研](docs/02-feature-caching.md)
 
 利用相邻去噪步骤之间中间特征的相似性，跳过冗余计算。**当前最活跃的研究方向。**
 
@@ -54,6 +54,8 @@
 - **[DuCa (Dual Feature Caching)](https://arxiv.org/abs/2412.18911)** — 激进+保守双策略交替缓存，在 OpenSora/FLUX 上验证
 - **[MixCache](https://arxiv.org/html/2508.12691v1)** — 多粒度混合缓存（step/cfg/block/token 级别）
 - **[Token-wise Caching](https://arxiv.org/abs/2409.18523)** — OpenSora 上 **2.36x** 加速，几乎无质量下降
+
+> 缓存粒度分类、8 种方法详解、视频 vs 图像缓存差异、选型决策树见 [docs/02-feature-caching.md](docs/02-feature-caching.md)
 
 ## 3. Token 剪枝 (Token Pruning)
 
