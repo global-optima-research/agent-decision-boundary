@@ -31,7 +31,7 @@
     └── 边缘部署
 ```
 
-## 1. 步数蒸馏 (Step Distillation)
+## 1. 步数蒸馏 (Step Distillation) — [深入调研](docs/01-step-distillation.md)
 
 核心思路：将多步扩散过程压缩到少步甚至单步生成。
 
@@ -42,6 +42,8 @@
 | [DCM (Dual-Expert Consistency Model)](https://vchitect.github.io/DCM/) | 少步高质量 | 双专家架构，分别处理语义布局和细节 |
 | [Video-BLADE](https://arxiv.org/html/2508.10774v1) | 块稀疏注意力+蒸馏 | 自适应稀疏注意力 + 无数据蒸馏协同设计 |
 | NVIDIA FastGen | **10-100x 加速** | 统一蒸馏库，多步模型→单步/少步 |
+
+> 详细技术演进、CD vs CT vs 对抗蒸馏对比、各方法架构图和横向对比见 [docs/01-step-distillation.md](docs/01-step-distillation.md)
 
 ## 2. 特征缓存 (Feature Caching)
 
