@@ -2,80 +2,171 @@
 
 > 目标：用最少的资源验证核心假设，决定是否值得投入 kernel 开发
 
-## Phase 0: 注意力矩阵采集与分析（1-2 天，单卡）
+---
 
-### 目标
-用真实模型采集注意力矩阵，亲自验证 7 个结构性质的量化数据。不依赖他人论文的数据。
+## Phase 0: 注意力矩阵采集与分析 ✅ 已完成
+
+> 实验报告: [experiments/phase0_attention_profiling_20260307_1600.md](../../experiments/phase0_attention_profiling_20260307_1600.md)
 
 ### 实验设置
 ```
-模型: Wan 2.1-1.3B (单卡可跑)
-分辨率: 480p, 49 帧
-Prompt: 10 个不同场景 (静态/运动/多人/自然/室内)
-采集: 所有层、所有头、所有去噪步的注意力矩阵
-存储: 注意力矩阵太大 → 存统计量（每块的均值/方差/稀疏度/entropy）
+模型: Wan 2.1-T2V-1.3B-Diffusers
+分辨率: 480 × 832, 17 帧
+Latent: (5, 60, 104) = 31,200 tokens
+Prompt: 10 个不同场景
+去噪步数: 50
+采样: 512 query/层/步
+GPU: RTX 5090, 耗时 87 分钟
 ```
 
-### 需要验证的量
+### 结果
 
-| 性质 | 测量方法 | 预期结果 |
-|------|---------|---------|
-| ① 块对角主导 | mean(diag blocks) / mean(off-diag blocks) | >2.5x |
-| ② 时间衰减 | attention_mass(window_r) vs r 的关系 | 指数衰减 |
-| ③ 跨 prompt 不变性 | top-k 支撑集的 IoU (跨 10 个 prompt) | >0.85 |
-| ④ U 形稳定性 | ||A_{s+1} - A_s||_F / ||A_s||_F vs s | U 形 |
-| ⑤ 头特化 | 每头注意力模式的聚类 | 3-4 类 |
-| ⑥ 层敏感性 | 逐层施加稀疏度，测 FVD/CLIP | 找到关键层 |
-| ⑦ 熵分布 | 每头 attention entropy | 双峰分布 |
+| 性质 | 预期 | 实测 | 结论 |
+|------|------|------|------|
+| ① 块对角主导 | >2.5x | **9.07x** | ✅ 远超预期（文献 2.8x） |
+| ② 时间衰减 | 指数衰减 | dist=0 占 **78.5%**, dist≥2 ≈ 0 | ✅ 衰减极陡 |
+| ③ 跨 prompt 不变性 | cosine >0.9 | **0.956** (中位 0.981) | ✅ 确认 |
+| ④ U 形稳定性 | U 形 | **单调递增** (0.70→0.78→0.86) | ❌ 不是 U 形 |
+| ⑤ 头特化 | 3-4 类 | 78 spatial + 8 global + 2 temporal + 272 mixed | ✅ 确认 |
+| ⑦ 熵分布 | 双峰 | 25.3% 低熵 + 19.2% 高熵 | ✅ 确认 |
 
-### 产出
-- 7 个性质的**亲自测量**数据（不是引用）
-- 每个性质的可视化图表
-- 性质间相关性分析（哪些性质在同一个头上同时出现）
+### 关键发现
+
+1. **块对角比 9x 远超文献 2.8x** — Wan 1.3B 的空间局部性极强，稀疏化空间巨大
+2. **Top 1% token 覆盖 57.8% 注意力** — 注意力极度集中
+3. **跨帧注意力几乎为零** — dist≥2 注意力 mass ≈ 0，相邻帧仅 21.5%
+4. **性质④不是 U 形而是单调递增** — 早期步更稳定，后期步变化大
+5. **75.6% 的头是 "mixed" 类型** — 分类阈值可能需要调整
+
+### 对后续实验的影响
+
+**原始假设失效**：
+- ~~"中间 70% 步注意力几乎不变 → 增量更新"~~ → 变化单调递增，不存在"稳定中间段"
+- ~~"token 级增量计算"~~ → softmax 全局归一化使得 token 级增量在数学上不可行
+
+**新方向**：
+- 注意力极度集中 → **稀疏掩码复用**（比增量计算更可行）
+- 早期步更稳定 → **早期步可激进跳过**
+- 块对角比 9x → **跨帧注意力可大幅近似**
+- 75.6% mixed 头 → **分类粒度需要细化**
+
+### Go/No-Go: **GO** (5/6 通过)
 
 ---
 
-## Phase 1: 增量计算可行性验证（2-3 天，单卡）
+## Phase 1: 注意力跳过与稀疏复用可行性验证（2-3 天，单卡）
 
-### 核心假设
-> 在稳定阶段（中间 70% 步），注意力矩阵的变化足够稀疏，使得增量更新比全量计算更快。
+### 核心假设（基于 Phase 0 调整后）
 
-### 实验
+> ~~在稳定阶段注意力矩阵变化稀疏，可以增量更新~~ （已否决）
+>
+> **新假设**：通过跳过特定步/层的注意力计算（复用上一步输出），以及复用稀疏掩码，可以在质量损失 <1% 的前提下减少 30-50% 的注意力计算量。
 
-**1a. 测量步间变化的稀疏度**
+### 放弃增量计算的原因
+
+1. **Softmax 全局归一化**：改一个 score entry → 分母变 → 同行所有 attention weight 都变。无法只更新"变化的部分"
+2. **性质④ 否定了原假设**：不存在 "稳定中间段"，变化是单调递增的
+3. **更好的替代方案**：输出级复用（跳过整层）比 entry 级增量更简单、更可靠
+
+### 实验 1a：逐步复用容忍度
+
+**目标**：测量每个去噪步跳过注意力计算的误差。
+
 ```python
-# 伪代码
-for step s in [0.15S, 0.85S]:
-    delta = A[s+1] - A[s]
-    sparsity = (|delta| < threshold).mean()
-    # 预期: sparsity > 90% 意味着增量更新只需算 <10% 的项
+# 对于每个去噪步 s:
+#   正常推理获取每层注意力输出 O_s
+#   测量 ||O_s - O_{s-1}|| / ||O_s|| (步间输出变化率)
+#
+# 对于每层 l:
+#   记录变化率，绘制 (step, layer) heatmap
 ```
 
-**1b. 增量更新的误差累积**
-```python
-# 模拟连续 N 步 reuse/delta
-A_cached = A[s0]  # 基准步
-for s in range(s0+1, s0+N):
-    # 方案1: 全 reuse
-    error_reuse[s] = ||A_cached - A[s]||_F / ||A[s]||_F
+**产出**：(step × layer) 的可复用度 heatmap，明确哪些 (step, layer) 组合可以安全跳过。
 
-    # 方案2: delta 更新 (只更新变化最大的 top-k% 项)
-    delta = A[s] - A_cached
-    top_indices = topk(|delta|, k%)
-    A_cached[top_indices] = A[s][top_indices]
-    error_delta[s] = ||A_cached - A[s]||_F / ||A[s]||_F
+**预期**（基于 Phase 0 的单调递增发现）：
+- step 0-15：变化率 <5% → 可大胆复用
+- step 15-35：变化率 5-10% → 隔步复用
+- step 35-50：变化率 >10% → 必须每步算
+
+### 实验 1b：实际跳过 + 视频质量对比
+
+**目标**：不只测误差，实际跳过并生成视频，对比质量。
+
+```
+跳过策略:
+  S0: 不跳过 (基准)
+  S1: 前 25% 步 (step 0-12) 隔步跳
+  S2: 前 50% 步 (step 0-24) 隔步跳
+  S3: 全程隔步跳 (每 2 步算 1 步)
+  S4: 前 25% 步全跳 (极端测试)
+  S5: 自适应阈值 (变化率 < τ 时跳过)
+
+质量测量:
+  - SSIM/LPIPS vs 基准视频 (定量)
+  - 肉眼对比 (定性)
+  - 10 prompts 各生成 1 个视频
 ```
 
-**1c. 不同 delta 比例 vs 质量**
+**成功标准**：S2 或 S3 策略 SSIM > 0.95 → 步级复用有价值
+
+### 实验 1c：逐层敏感度
+
+**目标**：找出哪些层可以激进跳过、哪些是关键层不能碰。
+
 ```
-delta 比例: 0% (全 reuse), 1%, 5%, 10%, 20%, 50%, 100% (全算)
-测量: 最终视频的 FVD, CLIP-Score, VBench
-目标: 找到 sweet spot (最少计算量 + 可接受质量)
+对于每层 l (0-29):
+  只跳过该层的注意力 (复用上一步输出)，其他层正常
+  生成视频，计算 SSIM/LPIPS vs 基准
+
+产出: 30 层的敏感度排名
+预期: ~5-10 层是关键层 (SSIM 下降明显)，其余 20-25 层可安全跳过
 ```
 
-### 成功标准
-- delta 5-10% 时质量损失 <1% → 增量计算可行
-- 连续 reuse 5 步质量可接受 → 步间复用有价值
+**与 Phase 0 数据的交叉验证**：
+- 预测：spatial 头多的层更不敏感（空间注意力变化慢）
+- 预测：global 头所在层更敏感（全局信息关键）
+
+### 实验 1d：稀疏掩码跨步复用
+
+**目标**：验证"步 s 的 top-k 稀疏掩码在步 s+1 仍然有效"。
+
+```
+做法:
+  步 s:   正常全注意力 → 记录每行 top-k 位置 → 掩码 M_s
+  步 s+1: 只在 M_s 位置计算注意力 (稀疏 attention)
+  步 s+2: 再次全注意力 → 新掩码 M_{s+2}
+  步 s+3: 用 M_{s+2} ...
+
+测量:
+  - 掩码复用 1 步 / 3 步 / 5 步 后的质量
+  - top-k 保留比例: 1%, 5%, 10%, 20%
+  - 掩码跨步 IoU (M_s 和 M_{s+n} 的重叠度)
+```
+
+**为什么可行**：跟增量计算不同，稀疏掩码内的 softmax 仍然是完整的（只是注意力范围缩小），不存在全局归一化问题。
+
+**成功标准**：
+- top-5% 掩码复用 3 步，SSIM > 0.95 → 掩码复用有价值
+- 掩码跨步 IoU > 0.8 → 掩码稳定性确认
+
+### 资源估计
+
+| 实验 | 时间 | GPU | 产出 |
+|------|------|-----|------|
+| 1a: 逐步容忍度 | 0.5 天 | 1× 5090 | 可复用度 heatmap |
+| 1b: 跳过+质量 | 1 天 | 1× 5090 | 各策略质量对比 |
+| 1c: 逐层敏感度 | 1 天 | 1× 5090 | 30 层敏感度排名 |
+| 1d: 掩码复用 | 0.5 天 | 1× 5090 | 掩码稳定性数据 |
+
+**总计: 3 天，1 张 5090**
+
+### Go/No-Go 标准
+
+| 结果 | 决策 |
+|------|------|
+| 1b 隔步跳 SSIM > 0.95 且 1d 掩码复用 3 步 IoU > 0.8 | **GO** → Phase 2 |
+| 1b SSIM > 0.95 但 1d 掩码不稳定 | **CONDITIONAL GO** → 只做步级跳过，放弃掩码复用 |
+| 1b SSIM < 0.90 | **NO GO** → 步级跳过收益不够，重新评估方向 |
 
 ---
 
@@ -84,33 +175,35 @@ delta 比例: 0% (全 reuse), 1%, 5%, 10%, 20%, 50%, 100% (全算)
 ### 核心假设
 > 对不同类型的头使用不同计算策略，比统一策略有显著加速。
 
+### 前置调整（基于 Phase 0）
+
+Phase 0 发现 75.6% 的头被分类为 "mixed"，说明原始的四分类（spatial/temporal/global/sink）阈值太严格。Phase 2 需要：
+1. **细化分类**：用连续特征（block_diag_ratio, temporal_specificity, entropy）做聚类，而非硬阈值
+2. **梯度式策略**：不是 4 种离散策略，而是根据连续特征选择窗口大小和精度
+
 ### 实验
 
-**2a. 头分类器**
+**2a. 头分类器（改进版）**
 ```python
 # 基于 Phase 0 采集的数据
-for each (layer, head):
-    pattern = attention_stats[layer][head]
-    if is_spatial(pattern):      type = 'spatial'   # 小窗口
-    elif is_temporal(pattern):   type = 'temporal'   # stride
-    elif is_global(pattern):     type = 'global'     # 低秩/全注意力
-    elif is_sink(pattern):       type = 'sink'       # 跳过
+# 用 KMeans 或 GMM 对 (block_diag_ratio, temporal_specificity, entropy) 聚类
+# 确定最优类数 K (预期 4-6 类)
+# 为每类分配计算策略
 ```
 
 **2b. PyTorch 级别异构注意力**
 ```python
-# 不是 CUDA kernel，只是 PyTorch 实现，验证正确性
-def heterogeneous_attention(Q, K, V, head_types):
+def heterogeneous_attention(Q, K, V, head_configs):
     outputs = []
-    for h, htype in enumerate(head_types):
-        if htype == 'spatial':
-            out = window_attention(Q[h], K[h], V[h], window=local)
-        elif htype == 'temporal':
+    for h, config in enumerate(head_configs):
+        if config.type == 'spatial':
+            out = window_attention(Q[h], K[h], V[h], window=config.window_size)
+        elif config.type == 'temporal':
             out = strided_attention(Q[h], K[h], V[h], stride=H*W)
-        elif htype == 'global':
-            out = linear_attention(Q[h], K[h], V[h])  # Random Feature
-        elif htype == 'sink':
-            out = V[h].mean(dim=0).expand_as(Q[h])    # 常数近似
+        elif config.type == 'global':
+            out = linear_attention(Q[h], K[h], V[h])
+        elif config.type == 'sink':
+            out = V[h].mean(dim=0).expand_as(Q[h])
     return stack(outputs)
 ```
 
@@ -120,10 +213,10 @@ def heterogeneous_attention(Q, K, V, head_types):
   - 基准: 全注意力 (FlashAttention)
   - 方案A: 统一窗口 (STA 式)
   - 方案B: 异构调度 (本方法)
-  - 方案C: 异构 + 步间复用
+  - 方案C: 异构 + Phase 1 的步级跳过
 
-指标: FVD, CLIP-Score, VBench, SSIM
-模型: Wan 2.1-1.3B, 50 个 prompt
+指标: SSIM, LPIPS, 肉眼对比
+模型: Wan 2.1-1.3B, 10-50 个 prompt
 ```
 
 ### 成功标准
@@ -132,7 +225,7 @@ def heterogeneous_attention(Q, K, V, head_types):
 
 ---
 
-## Phase 3: Triton 原型 Kernel（1-2 周，需 GPU）
+## Phase 3: Triton 原型 Kernel（1-2 周）
 
 ### 前置条件
 Phase 1 和 Phase 2 的成功标准都达到。
@@ -141,86 +234,68 @@ Phase 1 和 Phase 2 的成功标准都达到。
 
 **3a. 单头 kernel**
 ```
-先实现 4 种单头 kernel:
-  - spatial_attention_kernel (3D window)
-  - temporal_attention_kernel (strided)
+4 种 kernel (Triton 实现):
+  - spatial_attention_kernel (3D window, 利用 block_diag 9x)
+  - temporal_attention_kernel (strided, 利用 dist≥2 ≈ 0)
   - global_attention_kernel (linear/low-rank)
   - sink_bypass_kernel (常数输出)
-
-用 Triton 实现，对比 FlashAttention2/3 的速度
 ```
 
 **3b. 调度器**
 ```
-实现一个 dispatcher:
-  输入: head_type_map (离线 profile 结果)
-  行为: 对每个头调用对应的 kernel
-  目标: dispatcher overhead < 1% 的总计算时间
+dispatcher:
+  输入: head_config_map (Phase 0 离线 profile)
+  行为: 每头调用对应 kernel
+  目标: dispatcher overhead < 1%
 ```
 
-**3c. 增量模式**
+**3c. 步级跳过集成**
 ```
-实现 delta attention kernel:
-  输入: Q, K, V, cached_A, delta_mask
-  行为: 只计算 delta_mask 标记的位置，其余复用 cached_A
-  挑战: softmax 归一化需要全局信息 → 增量 softmax?
+结合 Phase 1 的发现:
+  - 早期步: 跳过非敏感层
+  - 后期步: 全量计算
+  - 掩码复用: 周期性全计算 → 中间步用缓存掩码
 ```
-
-### 关键技术挑战
-
-**增量 softmax 问题**：
-```
-标准 softmax: A_ij = exp(s_ij) / Σ_k exp(s_ik)
-
-如果只更新部分 s_ij，分母变了，所有 A_ij 都要变。
-可能的解法:
-  1. 近似: 假设分母变化小，只更新分子
-  2. 块级: 以块为单位全量计算，只跳过整个块
-  3. 分段: 只在同一行内做增量（行内分母独立）
-```
-
-选项 3 最可行：每行的 softmax 是独立的，如果一行内的变化项少，可以用 online softmax 的增量版本。
 
 ---
 
-## Phase 4: 预编译管线（Phase 3 之后）
+## Phase 4: 预编译管线
 
 ### 实现
 ```
 输入: 模型 M
 流程:
-  1. 跑 10-50 个 profile sample
+  1. 跑 10-50 个 profile sample (Phase 0 的精简版)
   2. 统计每 (l,h) 的类型、最优窗口大小、精度
-  3. 生成模型专用的配置文件
-  4. 编译模型专用的 kernel (Triton AOT 编译)
+  3. 生成模型专用配置 model_config.json
+  4. 编译模型专用 kernel (Triton AOT)
 
 产出: model_config.json + compiled_kernels/
 ```
+
+利用性质③ (跨 prompt 余弦相似度 0.956) — profile 结果对所有输入有效。
 
 ---
 
 ## 资源估计
 
-| Phase | 时间 | GPU 需求 | 产出 |
-|-------|------|---------|------|
-| 0: 数据采集 | 1-2 天 | 1× RTX 4090 | 结构性质验证数据 |
-| 1: 增量可行性 | 2-3 天 | 1× RTX 4090 | go/no-go 决策 |
-| 2: PyTorch 原型 | 3-5 天 | 1× RTX 4090 | 质量验证 |
-| 3: Triton kernel | 1-2 周 | 1× H100 | 速度验证 |
-| 4: 预编译 | 1 周 | 1× H100 | 完整系统 |
-
-**Phase 0-2 是关键决策点**：如果数据不支持假设，在投入 kernel 开发之前就能止损。
-
-总计：**1 张 4090 跑 1-2 周**即可完成前 3 个 Phase 的验证。
+| Phase | 时间 | GPU | 产出 | 状态 |
+|-------|------|-----|------|------|
+| 0: 数据采集 | 1.5h | 1× 5090 | 结构性质验证 | ✅ 完成 |
+| 1: 跳过/复用可行性 | 3 天 | 1× 5090 | go/no-go 决策 | ⬜ 下一步 |
+| 2: PyTorch 原型 | 3-5 天 | 1× 5090 | 质量验证 | ⬜ |
+| 3: Triton kernel | 1-2 周 | 1× 5090/H100 | 速度验证 | ⬜ |
+| 4: 预编译 | 1 周 | 1× 5090/H100 | 完整系统 | ⬜ |
 
 ---
 
-## 风险与缓解
+## 风险与缓解（基于 Phase 0 更新）
 
 | 风险 | 概率 | 影响 | 缓解 |
 |------|------|------|------|
-| 增量计算误差累积太快 | 中 | 高 | Phase 1 先验证；备选：块级复用代替 token 级 |
-| 异构调度 GPU 效率低 | 中 | 中 | Triton 的灵活性可能不够 → 考虑 CUDA |
-| 预编译假设不成立（某些模型不满足不变性） | 低 | 中 | 保留在线 fallback |
+| ~~增量计算误差累积~~ | — | — | 已放弃增量计算，改用输出级复用 |
+| 步级跳过质量下降过快 | 中 | 高 | Phase 1b 先验证；备选：只跳非敏感层 |
+| Mixed 头太多导致异构收益小 | 中 | 中 | Phase 2a 细化聚类，连续策略替代离散分类 |
+| 掩码跨步不稳定 | 中 | 中 | Phase 1d 验证；备选：放弃掩码复用，只做步级跳过 |
 | 竞争对手先发表 | 中 | 高 | 快速迭代，先发 arXiv |
-| Softmax 增量更新不精确 | 中 | 高 | 退化到块级：跳过整个 block 而非 token |
+| Triton kernel 效率不足 | 中 | 中 | 退化为 CUDA kernel；或与 SageAttention 集成 |
