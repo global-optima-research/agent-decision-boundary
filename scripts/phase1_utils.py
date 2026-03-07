@@ -119,6 +119,7 @@ class SkippableWanAttnProcessor:
         # ── I2V image attention ──
         hidden_states_img = None
         if encoder_hidden_states_img is not None:
+            from diffusers.models.transformers.transformer_wan import _get_added_kv_projections
             key_img, value_img = _get_added_kv_projections(attn, encoder_hidden_states_img)
             key_img = attn.norm_added_k(key_img)
             key_img = key_img.unflatten(2, (attn.heads, -1))
@@ -232,6 +233,7 @@ def generate_video(pipe, prompt, processors, height=480, width=832,
     generator = torch.Generator(device=device).manual_seed(seed)
 
     clear_all_caches(processors)
+    set_all_steps(processors, 0)
 
     def _on_step_end(pipe_obj, step, timestep, kwargs):
         set_all_steps(processors, step + 1)

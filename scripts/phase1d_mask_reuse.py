@@ -25,8 +25,7 @@ from pathlib import Path
 from datetime import datetime
 
 from phase1_utils import (
-    PROMPTS, load_wan_pipeline, install_skippable_processors,
-    set_all_steps, clear_all_caches, get_env_info, get_latent_shape, json_convert,
+    PROMPTS, load_wan_pipeline, get_env_info, get_latent_shape, json_convert,
 )
 
 
@@ -40,18 +39,17 @@ class SparseMaskWanAttnProcessor:
     - Always records full attention for IoU measurement (on sampled queries)
     """
 
-    def __init__(self, layer_idx, topk_pct=5, num_sample=256):
+    def __init__(self, layer_idx, topk_pct=5, num_sample=256, max_gap=5):
         self.layer_idx = layer_idx
         self.topk_pct = topk_pct
         self.num_sample = num_sample
         self.current_step = 0
-        # Mask cache: (B, H, N_sample) -> top-k indices per sampled query
-        self._cached_mask_indices = None
+        self.max_gap = max_gap
         # Controller
         self.is_calibration_step = None  # callable(step) -> bool
-        # IoU tracking
-        self.iou_records = []  # list of (step, iou_value)
-        self._prev_topk = None
+        # IoU tracking: keep topk from last max_gap steps for gap-step IoU
+        self.iou_records = []  # list of dicts
+        self._topk_history = {}  # step -> topk_idx tensor
         self.rng = np.random.RandomState(42)
         self._sample_idx = None
 
@@ -120,29 +118,40 @@ class SparseMaskWanAttnProcessor:
                 k_val = max(1, int(N_k * self.topk_pct / 100))
                 topk_idx = scores[0].topk(k_val, dim=-1).indices  # (H, sample, k_val)
 
-                # Compute IoU with previous step
-                if self._prev_topk is not None and self._prev_topk.shape == topk_idx.shape:
-                    ious = []
-                    for h in range(H):
-                        h_ious = []
-                        for qi in range(min(sample_size, 64)):
-                            set_curr = set(topk_idx[h, qi].cpu().tolist())
-                            set_prev = set(self._prev_topk[h, qi].cpu().tolist())
-                            iou = len(set_curr & set_prev) / len(set_curr | set_prev)
-                            h_ious.append(iou)
-                        ious.append(np.mean(h_ious))
-                    mean_iou = np.mean(ious)
-                    self.iou_records.append({
-                        'step': self.current_step,
-                        'iou': float(mean_iou),
-                        'per_head_iou': [float(x) for x in ious],
-                    })
+                # Compute IoU with previous steps at various gaps
+                record = {'step': self.current_step, 'gap_ious': {}}
+                topk_cpu = topk_idx.cpu()
+                for gap in range(1, self.max_gap + 1):
+                    prev_step = self.current_step - gap
+                    if prev_step in self._topk_history:
+                        prev_topk = self._topk_history[prev_step]
+                        if prev_topk.shape == topk_cpu.shape:
+                            ious = []
+                            for h in range(H):
+                                h_ious = []
+                                for qi in range(min(sample_size, 64)):
+                                    set_curr = set(topk_cpu[h, qi].tolist())
+                                    set_prev = set(prev_topk[h, qi].tolist())
+                                    iou = len(set_curr & set_prev) / len(set_curr | set_prev)
+                                    h_ious.append(iou)
+                                ious.append(np.mean(h_ious))
+                            record['gap_ious'][gap] = float(np.mean(ious))
 
-                self._prev_topk = topk_idx.clone()
+                if record['gap_ious']:
+                    record['iou'] = record['gap_ious'].get(1, 0.0)  # adjacent-step
+                    self.iou_records.append(record)
+
+                # Store and evict old history
+                self._topk_history[self.current_step] = topk_cpu
+                old_steps = [s for s in self._topk_history
+                             if s < self.current_step - self.max_gap]
+                for s in old_steps:
+                    del self._topk_history[s]
 
         # ── I2V image attention ──
         hidden_states_img = None
         if encoder_hidden_states_img is not None:
+            from diffusers.models.transformers.transformer_wan import _get_added_kv_projections
             key_img, value_img = _get_added_kv_projections(attn, encoder_hidden_states_img)
             key_img = attn.norm_added_k(key_img)
             key_img = key_img.unflatten(2, (attn.heads, -1))
@@ -234,7 +243,7 @@ def run_experiment(args):
             # Reset processors
             for proc in sparse_procs.values():
                 proc.current_step = 0
-                proc._prev_topk = None
+                proc._topk_history = {}
                 proc._sample_idx = None
                 proc.iou_records = []
 
@@ -261,15 +270,18 @@ def run_experiment(args):
 
             # Collect IoU data across layers
             layer_ious = {}
+            layer_gap_ious = {}
             for key, proc in sparse_procs.items():
                 layer_idx = proc.layer_idx
                 if proc.iou_records:
-                    step_ious = {r['step']: r['iou'] for r in proc.iou_records}
+                    step_ious = {r['step']: r.get('iou', 0) for r in proc.iou_records}
                     layer_ious[layer_idx] = step_ious
+                    # Collect gap-level IoU
+                    layer_gap_ious[layer_idx] = [r.get('gap_ious', {}) for r in proc.iou_records]
 
             # Compute summary
             if layer_ious:
-                # Average IoU across layers for each step
+                # Average adjacent-step IoU across layers for each step
                 all_steps = sorted(set(s for ious in layer_ious.values() for s in ious.keys()))
                 step_avg_iou = {}
                 for s in all_steps:
@@ -277,13 +289,14 @@ def run_experiment(args):
                     step_avg_iou[s] = float(np.mean(vals))
 
                 overall_iou = float(np.mean(list(step_avg_iou.values())))
-                print(f"  {elapsed:.1f}s  mean IoU={overall_iou:.4f}")
+                print(f"  {elapsed:.1f}s  mean adj-step IoU={overall_iou:.4f}")
 
                 prompt_iou_data.append({
                     'prompt_idx': pi,
                     'overall_iou': overall_iou,
                     'step_avg_iou': step_avg_iou,
                     'layer_ious': {str(k): v for k, v in layer_ious.items()},
+                    'layer_gap_ious': {str(k): v for k, v in layer_gap_ious.items()},
                 })
             else:
                 print(f"  {elapsed:.1f}s  no IoU data")
@@ -296,7 +309,7 @@ def run_experiment(args):
             overall_ious = [p['overall_iou'] for p in prompt_iou_data]
             mean_overall = float(np.mean(overall_ious))
 
-            # Step-level aggregation
+            # Step-level aggregation (adjacent-step IoU)
             all_step_keys = set()
             for p in prompt_iou_data:
                 all_step_keys.update(p['step_avg_iou'].keys())
@@ -305,16 +318,17 @@ def run_experiment(args):
                 vals = [p['step_avg_iou'][s] for p in prompt_iou_data if s in p['step_avg_iou']]
                 step_summary[int(s)] = float(np.mean(vals))
 
-            # Multi-step reuse stability
+            # Multi-step reuse: aggregate gap-level IoU from layer data
             reuse_gaps = {}
             for gap in [1, 3, 5]:
-                gap_ious = []
-                steps = sorted(step_summary.keys())
-                for i, s in enumerate(steps):
-                    if i >= gap:
-                        gap_ious.append(step_summary[s])
-                if gap_ious:
-                    reuse_gaps[gap] = float(np.mean(gap_ious))
+                gap_vals = []
+                for p in prompt_iou_data:
+                    for layer_key, layer_data in p.get('layer_gap_ious', {}).items():
+                        for record in layer_data:
+                            if gap in record:
+                                gap_vals.append(record[gap])
+                if gap_vals:
+                    reuse_gaps[gap] = float(np.mean(gap_vals))
 
             all_results[topk_pct] = {
                 'mean_iou': mean_overall,
@@ -324,7 +338,7 @@ def run_experiment(args):
                 'prompt_data': prompt_iou_data,
             }
 
-            print(f"\n  Overall IoU: {mean_overall:.4f} ± {np.std(overall_ious):.4f}")
+            print(f"\n  Overall adj-step IoU: {mean_overall:.4f} ± {np.std(overall_ious):.4f}")
             for gap, iou in reuse_gaps.items():
                 print(f"  {gap}-step reuse IoU: {iou:.4f}")
 

@@ -20,9 +20,116 @@ from pathlib import Path
 from datetime import datetime
 
 from phase1_utils import (
-    PROMPTS, load_wan_pipeline, install_skippable_processors,
-    set_all_steps, clear_all_caches, get_env_info, get_latent_shape, json_convert,
+    PROMPTS, load_wan_pipeline, get_env_info, get_latent_shape, json_convert,
 )
+
+
+class OnlineChangeTracker:
+    """
+    Tracks step-to-step output change on-the-fly to avoid storing all outputs.
+    Only keeps one previous output per layer in GPU memory.
+    """
+
+    def __init__(self, num_layers, num_steps):
+        self.num_layers = num_layers
+        self.num_steps = num_steps
+        self._prev_outputs = {}  # layer_idx -> tensor (GPU)
+        self.changes = np.zeros((num_steps, num_layers))  # filled on-the-fly
+
+    def record(self, layer_idx, step, output):
+        """Record output and compute change vs previous step."""
+        if layer_idx in self._prev_outputs:
+            o_curr = output.float()
+            o_prev = self._prev_outputs[layer_idx].float()
+            norm_curr = torch.norm(o_curr).item()
+            if norm_curr > 1e-10:
+                self.changes[step, layer_idx] = torch.norm(o_curr - o_prev).item() / norm_curr
+        # Keep only the latest output (on GPU, no CPU copy)
+        self._prev_outputs[layer_idx] = output.detach()
+
+    def reset(self):
+        self._prev_outputs = {}
+
+
+class ChangeTrackingWanAttnProcessor:
+    """Attention processor that computes output change on-the-fly."""
+
+    def __init__(self, layer_idx, tracker):
+        self.layer_idx = layer_idx
+        self.tracker = tracker
+        self.current_step = 0
+
+    def __call__(
+        self,
+        attn,
+        hidden_states,
+        encoder_hidden_states=None,
+        attention_mask=None,
+        rotary_emb=None,
+    ):
+        from diffusers.models.transformers.transformer_wan import (
+            _get_qkv_projections,
+            dispatch_attention_fn,
+        )
+
+        encoder_hidden_states_img = None
+        if attn.add_k_proj is not None:
+            image_context_length = encoder_hidden_states.shape[1] - 512
+            encoder_hidden_states_img = encoder_hidden_states[:, :image_context_length]
+            encoder_hidden_states = encoder_hidden_states[:, image_context_length:]
+
+        query, key, value = _get_qkv_projections(attn, hidden_states, encoder_hidden_states)
+        query = attn.norm_q(query)
+        key = attn.norm_k(key)
+        query = query.unflatten(2, (attn.heads, -1))
+        key = key.unflatten(2, (attn.heads, -1))
+        value = value.unflatten(2, (attn.heads, -1))
+
+        if rotary_emb is not None:
+            def apply_rotary_emb(hs, freqs_cos, freqs_sin):
+                x1, x2 = hs.unflatten(-1, (-1, 2)).unbind(-1)
+                cos = freqs_cos[..., 0::2]
+                sin = freqs_sin[..., 1::2]
+                out = torch.empty_like(hs)
+                out[..., 0::2] = x1 * cos - x2 * sin
+                out[..., 1::2] = x1 * sin + x2 * cos
+                return out.type_as(hs)
+            query = apply_rotary_emb(query, *rotary_emb)
+            key = apply_rotary_emb(key, *rotary_emb)
+
+        hidden_states_img = None
+        if encoder_hidden_states_img is not None:
+            from diffusers.models.transformers.transformer_wan import _get_added_kv_projections
+            key_img, value_img = _get_added_kv_projections(attn, encoder_hidden_states_img)
+            key_img = attn.norm_added_k(key_img)
+            key_img = key_img.unflatten(2, (attn.heads, -1))
+            value_img = value_img.unflatten(2, (attn.heads, -1))
+            hidden_states_img = dispatch_attention_fn(
+                query, key_img, value_img,
+                attn_mask=None, dropout_p=0.0, is_causal=False,
+                backend=None, parallel_config=None,
+            )
+            hidden_states_img = hidden_states_img.flatten(2, 3)
+            hidden_states_img = hidden_states_img.type_as(query)
+
+        hidden_states = dispatch_attention_fn(
+            query, key, value,
+            attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+            backend=None, parallel_config=None,
+        )
+        hidden_states = hidden_states.flatten(2, 3)
+        hidden_states = hidden_states.type_as(query)
+
+        if hidden_states_img is not None:
+            hidden_states = hidden_states + hidden_states_img
+
+        hidden_states = attn.to_out[0](hidden_states)
+        hidden_states = attn.to_out[1](hidden_states)
+
+        # Track change on-the-fly (stays on GPU, no CPU copy)
+        self.tracker.record(self.layer_idx, self.current_step, hidden_states)
+
+        return hidden_states
 
 
 def run_experiment(args):
@@ -36,17 +143,31 @@ def run_experiment(args):
 
     # ── Load model ──
     pipe = load_wan_pipeline(args.model, device)
-    processors = install_skippable_processors(pipe.transformer)
 
     latent_shape = get_latent_shape(args.height, args.width, args.num_frames)
     print(f"Latent shape: {latent_shape}, tokens: {np.prod(latent_shape)}")
 
-    # Enable output capture on all self-attention processors
-    self_procs = {k: v for k, v in processors.items() if k.startswith('self_')}
-    for proc in self_procs.values():
-        proc.capture_output = True
+    # Discover number of self-attention layers
+    self_attn_layers = []
+    for name, module in pipe.transformer.named_modules():
+        if type(module).__name__ == 'WanAttention':
+            parts = name.split('.')
+            layer_idx = None
+            is_cross = False
+            for j, p in enumerate(parts):
+                if p == 'blocks' and j + 1 < len(parts):
+                    try:
+                        layer_idx = int(parts[j + 1])
+                    except ValueError:
+                        pass
+                if p == 'attn2':
+                    is_cross = True
+            if layer_idx is not None and not is_cross:
+                self_attn_layers.append((name, module, layer_idx))
 
-    num_layers = len(self_procs)
+    num_layers = len(self_attn_layers)
+    print(f"Self-attention layers: {num_layers}")
+
     prompts = PROMPTS[:args.num_prompts]
 
     # Storage: (prompt, step, layer) -> relative change
@@ -61,14 +182,19 @@ def run_experiment(args):
         t0 = time.time()
         print(f"\n[{pi+1}/{len(prompts)}] \"{prompt[:60]}\"")
 
-        clear_all_caches(processors)
-        for proc in self_procs.values():
-            proc.captured_outputs = {}
+        # Create fresh tracker and processors for each prompt
+        tracker = OnlineChangeTracker(num_layers, args.num_steps)
+        tracking_procs = []
+        for name, module, layer_idx in self_attn_layers:
+            proc = ChangeTrackingWanAttnProcessor(layer_idx, tracker)
+            module.processor = proc
+            tracking_procs.append(proc)
 
         generator = torch.Generator(device=device).manual_seed(args.seed)
 
         def step_callback(pipe_obj, step, timestep, kwargs):
-            set_all_steps(processors, step + 1)
+            for proc in tracking_procs:
+                proc.current_step = step + 1
             return kwargs
 
         with torch.no_grad():
@@ -83,31 +209,13 @@ def run_experiment(args):
                 output_type="latent",
             )
 
-        # Compute step-to-step change for each layer
-        for layer_idx in range(num_layers):
-            proc = self_procs[f'self_{layer_idx}']
-            steps_captured = sorted(proc.captured_outputs.keys())
-
-            for si in range(1, len(steps_captured)):
-                s_curr = steps_captured[si]
-                s_prev = steps_captured[si - 1]
-                o_curr = proc.captured_outputs[s_curr].float()
-                o_prev = proc.captured_outputs[s_prev].float()
-
-                norm_curr = torch.norm(o_curr).item()
-                if norm_curr > 1e-10:
-                    rel_change = torch.norm(o_curr - o_prev).item() / norm_curr
-                else:
-                    rel_change = 0.0
-
-                all_changes[pi, s_curr, layer_idx] = rel_change
+        all_changes[pi] = tracker.changes
 
         elapsed = time.time() - t0
         print(f"  Done in {elapsed:.1f}s")
 
-        # Free captured outputs
-        for proc in self_procs.values():
-            proc.captured_outputs = {}
+        # Free tracker's GPU tensors
+        tracker.reset()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -176,7 +284,7 @@ def run_experiment(args):
         'std_changes': std_changes.tolist(),
         'step_avg': step_avg.tolist(),
         'layer_avg': layer_avg.tolist(),
-        'safe_pct': safe_pct,
+        'safe_pct': float(safe_pct),
         'top5_stable_layers': top5_stable.tolist(),
         'top5_volatile_layers': top5_volatile.tolist(),
     }
