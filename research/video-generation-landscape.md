@@ -11,7 +11,8 @@
 极热 🔴🔴🔴  推理加速 | 核心模型训练(大厂) | 注意力优化
 很热 🔴🔴    可控生成(motion/camera) | 身份保持 | 3D/4D生成 | 统一理解+生成
 热   🔴      视频编辑 | 世界模型/物理 | 步数蒸馏
-温热 🟡      音视频联合生成 | 交互式视频/游戏引擎 | 视频RLHF/对齐
+温热 🟡      音视频联合生成 | 交互式视频/游戏引擎
+热   🔴      视频RLHF/对齐（三次验证后上调）
 偏冷 🟢      视频数据工程 | 视频生成评估方法
 ```
 
@@ -31,18 +32,19 @@
 | 步数蒸馏 | rCM (ICLR'26), CausVid (CVPR'25), DCM | 热 | ✅ | 无 |
 | 音视频联合 | MOVA, LTX-2, Seedance 2.0 | 温热 | ✅ | 无 |
 | 交互式视频 | Yan, GameGen-X | 温热 | ⚠️ | 无 |
-| **视频 RLHF/对齐** | **VideoDPO (CVPR'25), VideoReward 等 5-6 篇** | **温热** | **✅** | **有** |
+| **视频 RLHF/对齐** | **VideoDPO (CVPR'25), Flow-GRPO (NeurIPS'25) 等 10+ 篇** | **热** | **✅** | **低** |
 | 视频数据工程 | — | 偏冷 | ✅ | 无 |
 | 视频生成评估 | VBench-2.0, Video-Bench | 偏冷 | ✅ | 有 |
 
 ## 推荐方向排序
 
-### ★★★ 视频生成对齐（Video Generation Alignment）
+### ~~★★★~~ → ★★ 视频生成对齐（Video Generation Alignment）
 
-> **热度修正**：初始评估为"偏冷"，经二次验证修正为"温热"。
-> 闭源大厂（HunyuanVideo 1.5, Kling）已在做，学术界有 5-6 篇。但相比图像对齐（几十篇），仍属早期。
+> **热度三次修正**：
+> - 初始评估："偏冷" → 二次验证修正为"温热" → **三次验证修正为"热"**
+> - 每次深挖都发现比预期更多的竞品，这个方向已不再是早期阶段。
 
-**已有工作（比初始评估更多）**：
+**已有工作（远比初始评估更多）**：
 
 闭源模型：
 | 模型 | 对齐情况 |
@@ -51,31 +53,37 @@
 | Kling 2.6/3.0 | ✅ RLHF，多 reward model |
 | Sora 2 | ✅ 大概率做了（未公开细节） |
 | Seedance 2.0 | ✅ feedback-driven learning |
-| **Wan 2.1** | **❓ 未公开做过对齐** |
 | CogVideoX | ❌ 基础模型没有 |
 
-学术工作：
+通用对齐方法（学术）：
 | 工作 | 发表 | 内容 |
 |------|------|------|
 | VideoDPO | CVPR 2025 | OmniScore 偏好对齐，3 个开源模型验证 |
 | VideoReward | 2025.01 | 182k 偏好数据 + Flow-DPO/Flow-RWR |
 | OnlineVPO | 2024.12 | 在线视频偏好优化 |
-| Dual-IPO | 2025.02 | 双迭代偏好优化 |
+| Dual-IPO | 2025.02 | 双迭代偏好优化（已在 WanX-1.3B 上验证） |
 | VPO | ICCV 2025 | 通过 prompt 优化做对齐（不改模型） |
 | Discriminator-Free DPO | 2025.04 | 无判别器的视频 DPO |
+
+**⚠️ 专门针对 Wan 2.1 的对齐工作（三次验证新增）**：
+| 工作 | 方法 | 基座模型 | 发表 |
+|------|------|---------|------|
+| **Flow-GRPO** | 在线 RL + flow matching | Wan 2.1-14B | **NeurIPS 2025** |
+| **GigaVideo-1** | Reward-guided fine-tuning | Wan 2.1 | 2025.06 |
+| **GenRL** | GRPO + 多 reward | Wan 2.1-1.3B | GitHub 开源框架 |
+| **Dual-IPO** | 双迭代偏好优化 | WanX-1.3B | 2025.02 |
+| **Identity-GRPO** | 身份保持 RL | Wan 系列 | 阿里自己的 |
+
+> **关键结论：Wan 2.1 官方没做对齐，但第三方已有 5 个工作在 Wan 2.1 上做了 RL/RLHF 对齐。**
+> 其中 Flow-GRPO 已被 NeurIPS 2025 接收，GenRL 提供了开源框架。
+> **"在 Wan 2.1 上做对齐"不再是差异化切入点。**
 
 **仍然存在的未解决问题**：
 1. Reward model 质量不够 — 现有 reward 大多基于图像指标拼凑，没有真正理解视频时间维度
 2. 物理合理性 — 没有好的自动评估方法
 3. 长视频对齐 — 现有工作都是短片段
-4. Wan 2.1（最流行开源模型）没有公开做过对齐
 
-**如果做，差异化切入点**：
-1. 更好的 video reward model — 利用注意力分析数据设计新评估维度
-2. 物理感知的 reward — 目前没人做好
-3. 在 Wan 2.1 上做对齐 — 最流行的开源模型但没有公开对齐过
-
-**风险**：方向正在快速升温，需要快速行动。需要学习 RLHF/DPO 技术栈。
+**风险**：方向已经从"温热"升级为"热"，竞争强度被严重低估。
 
 ### ★★ 推理加速半占领方向（详见 direction-analysis.md）
 
@@ -87,17 +95,17 @@
 **优点**：留在熟悉领域，Phase 0/1 数据直接复用。
 **缺点**：整个加速领域竞争激烈，即使半占领方向也有被抢先的风险。
 
-### ★★ 视频生成质量诊断
+### ~~★★~~ → ★ 视频生成质量诊断 / 分析型论文
 
-**思路**：从"加速注意力"转向"理解注意力" — 利用 Phase 0/1 建立的模型内部行为与生成质量的关联，做诊断工具。
+> **四次验证后下调**：已有 2 篇专门的分析论文 + 10+ 篇加速论文内含分析。
+> arXiv:2504.10317 已在 Mochi/HunyuanVideo/Wan 2.1/CogVideoX 上做了跨模型注意力分析。
+> Compact Attention 做了 5 类头分类。Phase 0/1 数据不再构成"独特壁垒"。
 
-**可能的 story**："Understanding Why Video Diffusion Models Fail"
-- VBench 评估"生成了什么"，我们分析"为什么生成得不好"
-- 给定一个质量差的视频，定位到哪些层/头/步的注意力出了问题
-- 首个从模型内部视角分析视频生成失败模式的工作
+**直接竞品**：
+- arXiv:2504.10317 "Analysis of Attention in Video Diffusion Transformers" — 跨 prompt、层敏感度、逐步演变、sink heads，**覆盖了 Wan 2.1**
+- arXiv:2504.12027 "Understanding Attention Mechanism in Video Diffusion Models" — 扰动分析 + 信息熵
 
-**优点**：利用已有数据优势，分析型工作不需要大量训练。
-**缺点**：需要非常强的洞察力，分析不够深则论文无力。
+**风险**：我们的分析与 arXiv:2504.10317 高度重叠，差异化空间极小。
 
 ### ★★ 交互式视频生成
 
@@ -110,23 +118,29 @@
 
 | 方向 | 新颖性 | 资源匹配 | 我们的优势 | 出成果速度 | 综合 |
 |------|--------|---------|-----------|-----------|------|
-| **视频 RLHF/对齐** | **中高** | **✅** | **中** | **中** | **★★★** |
-| 推理加速(半占领) | 中 | ✅ | 高 | 快 | ★★ |
-| 生成质量诊断 | 中高 | ✅ | 高 | 中 | ★★ |
+| 视频 RLHF/对齐 | 中 | ✅ | 低 | 中 | ★★ (下调) |
+| 推理加速(半占领) | 中 | ✅ | 中 | 快 | ★★ |
+| 生成质量诊断/分析 | 低 | ✅ | 低 | 快 | ★ (下调，已有直接竞品) |
 | 交互式视频 | 高 | ⚠️ | 低 | 慢 | ★★ |
 | 音视频联合加速 | 高 | ✅ | 低 | 慢 | ★ |
 
+> **注意**：经过多轮验证，没有方向获得 ★★★ 评级。所有"看起来空白"的方向经深挖后均发现有竞品。
+
 ## 决策建议
 
-**如果愿意学习新技术栈**：选视频 RLHF/对齐 — 偏冷方向，问题已被定义但解决方案初步，8×H800 正好适合。
+**核心教训：这个领域没有蓝海。** 每个方向都有竞品，策略应转为：
+1. 在已有方向上做出**更强的实验结果**（速度取胜）
+2. 或找到**更细粒度的未解决问题**（而非"整个方向没人做"）
 
 **如果想留在熟悉领域**：选推理加速半占领方向 — Phase 0/1 数据直接用，但需要快速执行。
 
 **如果想最大化已有数据价值**：选生成质量诊断 — 用现有注意力分析做可解释性研究，转换赛道。
 
+**如果愿意学习新技术栈**：视频 RLHF/对齐仍有空间，但竞争比预期激烈得多，需要找到非常具体的差异化点。
+
 ## 参考文献
 
-### 视频 RLHF/对齐
+### 视频 RLHF/对齐（通用方法）
 - [VideoDPO](https://arxiv.org/abs/2412.14167) — OmniScore 偏好对齐, CVPR 2025
 - [VideoReward](https://arxiv.org/abs/2501.13918) — 182k 偏好数据 + Flow-DPO/Flow-RWR (2025.01)
 - [OnlineVPO](https://arxiv.org/abs/2412.15159) — 在线视频偏好优化 (2024.12)
@@ -135,6 +149,12 @@
 - [Discriminator-Free DPO for Video](https://arxiv.org/abs/2504.08542) — 无判别器 (2025.04)
 - [HunyuanVideo 1.5 Technical Report](https://arxiv.org/html/2511.18870v2) — 完整 DPO+RLHF pipeline
 - [Unified Reward Model](https://arxiv.org/abs/2503.05236) — 统一 reward
+
+### 视频 RLHF/对齐（Wan 2.1 专项，三次验证新增）
+- [Flow-GRPO](https://arxiv.org/abs/2505.05470) — 在线 RL + flow matching, Wan 2.1-14B, **NeurIPS 2025**
+- [GigaVideo-1](https://arxiv.org/abs/2506.10639) — Reward-guided fine-tuning, Wan 2.1, 4 GPU-hours (2025.06)
+- [GenRL](https://github.com/ModelTC/GenRL) — 模块化 RL 框架, Wan 2.1-1.3B, 开源
+- [Identity-GRPO](https://arxiv.org/abs/2510.14256) — 身份保持 RL, Wan 系列, 阿里
 
 ### 可控生成
 - [MotionAgent](https://arxiv.org/abs/2502.03207) — ICCV 2025
