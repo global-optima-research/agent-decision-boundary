@@ -87,8 +87,20 @@ def enable_first_block_cache(pipe, threshold=0.1):
 
 
 def disable_first_block_cache(pipe):
-    """Disable First Block Cache."""
-    pipe.transformer.reset_hooks()
+    """Disable First Block Cache by removing hooks from all blocks."""
+    _ALL_BLOCK_NAMES = ["blocks", "transformer_blocks", "single_transformer_blocks",
+                        "temporal_transformer_blocks"]
+    transformer = pipe.transformer
+    for attr_name in _ALL_BLOCK_NAMES:
+        blocks = getattr(transformer, attr_name, None)
+        if blocks is None or not isinstance(blocks, torch.nn.ModuleList):
+            continue
+        for block in blocks:
+            if hasattr(block, '_diffusers_hook'):
+                hook_registry = block._diffusers_hook
+                for name in list(hook_registry.hooks.keys()):
+                    hook_registry.remove_hook(name)
+                del block._diffusers_hook
 
 
 # ─── Video Generation ────────────────────────────────────────────────────────
