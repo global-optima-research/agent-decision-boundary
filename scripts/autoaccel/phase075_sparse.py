@@ -256,7 +256,7 @@ def install_sparse_processors(transformer, window=None, num_frames_latent=5,
 
 def reset_processors(transformer):
     """Reset all processors to default."""
-    from diffusers.models.attention_processor import WanAttnProcessor2_0
+    from diffusers.models.transformers.transformer_wan import WanAttnProcessor2_0
     for name, module in transformer.named_modules():
         if type(module).__name__ == 'WanAttention':
             module.processor = WanAttnProcessor2_0()
