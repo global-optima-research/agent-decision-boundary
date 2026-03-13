@@ -158,6 +158,47 @@ def call_vllm_local(messages: list[dict], model: str, port: int = 8000) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
+# Global cache for transformers model
+_hf_model = None
+_hf_tokenizer = None
+
+
+def call_transformers_local(messages: list[dict], model: str) -> str:
+    """Run inference locally with transformers (no vLLM needed)."""
+    global _hf_model, _hf_tokenizer
+
+    if _hf_model is None:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+        print(f"  Loading {model}...")
+        _hf_tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+        _hf_model = AutoModelForCausalLM.from_pretrained(
+            model,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        print(f"  Model loaded.")
+
+    text = _hf_tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = _hf_tokenizer(text, return_tensors="pt").to(_hf_model.device)
+
+    import torch
+    with torch.no_grad():
+        outputs = _hf_model.generate(
+            **inputs,
+            max_new_tokens=300,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+        )
+
+    new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    return _hf_tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+
 MODEL_CONFIGS = {
     "gpt-4o": {
         "backend": "openai",
@@ -176,6 +217,10 @@ MODEL_CONFIGS = {
         "model_id": "google/gemini-2.0-flash-001",
     },
     "qwen2.5-7b-local": {
+        "backend": "transformers",
+        "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    },
+    "qwen2.5-7b-vllm": {
         "backend": "vllm",
         "model_id": "Qwen/Qwen2.5-7B-Instruct",
     },
@@ -192,6 +237,8 @@ def call_model(messages: list[dict], model_name: str) -> str:
         return call_openrouter(messages, config["model_id"])
     elif config["backend"] == "vllm":
         return call_vllm_local(messages, config["model_id"])
+    elif config["backend"] == "transformers":
+        return call_transformers_local(messages, config["model_id"])
     else:
         raise ValueError(f"Unknown backend: {config['backend']}")
 
