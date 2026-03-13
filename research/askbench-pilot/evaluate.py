@@ -4,7 +4,16 @@ Usage:
     python evaluate.py --model gpt-4o
     python evaluate.py --model claude-sonnet
     python evaluate.py --model qwen2.5-72b
+    python evaluate.py --model qwen2.5-7b-local
     python evaluate.py --all
+
+Local vLLM mode (no API key needed):
+    # Terminal 1: start vLLM server
+    python -m vllm.entrypoints.openai.api_server \
+        --model Qwen/Qwen2.5-7B-Instruct --port 8000
+
+    # Terminal 2: run evaluation
+    python evaluate.py --model qwen2.5-7b-local
 """
 
 import json
@@ -130,6 +139,25 @@ def call_openrouter(messages: list[dict], model: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
+def call_vllm_local(messages: list[dict], model: str, port: int = 8000) -> str:
+    """Call local vLLM OpenAI-compatible server."""
+    import requests
+    base_url = os.environ.get("VLLM_BASE_URL", f"http://localhost:{port}")
+
+    resp = requests.post(
+        f"{base_url}/v1/chat/completions",
+        json={
+            "model": model,
+            "messages": messages,
+            "temperature": 0.0,
+            "max_tokens": 300,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
 MODEL_CONFIGS = {
     "gpt-4o": {
         "backend": "openai",
@@ -147,6 +175,10 @@ MODEL_CONFIGS = {
         "backend": "openrouter",
         "model_id": "google/gemini-2.0-flash-001",
     },
+    "qwen2.5-7b-local": {
+        "backend": "vllm",
+        "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    },
 }
 
 
@@ -158,6 +190,8 @@ def call_model(messages: list[dict], model_name: str) -> str:
         return call_anthropic(messages, config["model_id"])
     elif config["backend"] == "openrouter":
         return call_openrouter(messages, config["model_id"])
+    elif config["backend"] == "vllm":
+        return call_vllm_local(messages, config["model_id"])
     else:
         raise ValueError(f"Unknown backend: {config['backend']}")
 
