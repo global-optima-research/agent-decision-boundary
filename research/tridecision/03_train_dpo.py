@@ -29,10 +29,10 @@ PAIRS_PATH = Path(__file__).parent / "preference_pairs.json"
 OUTPUT_DIR = Path(__file__).parent / "checkpoints" / "tridecision-pilot"
 
 # Training hyperparameters
-LEARNING_RATE = 5e-7
-NUM_EPOCHS = 3
+LEARNING_RATE = 5e-5
+NUM_EPOCHS = 10
 PER_DEVICE_BATCH_SIZE = 1
-GRADIENT_ACCUMULATION_STEPS = 8  # effective batch = 8 * 1 = 8 (single GPU)
+GRADIENT_ACCUMULATION_STEPS = 4  # effective batch = 4 (smaller for more frequent updates)
 MAX_LENGTH = 1024
 MAX_PROMPT_LENGTH = 512
 BETA = 0.1  # DPO beta
