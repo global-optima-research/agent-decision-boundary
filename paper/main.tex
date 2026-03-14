@@ -17,6 +17,8 @@
 \usepackage{multirow}
 \usepackage{enumitem}
 \usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc, decorations.pathreplacing}
 
 \definecolor{actcolor}{HTML}{2E7D32}
 \definecolor{askcolor}{HTML}{E65100}
@@ -64,6 +66,57 @@ Scroll the page & Modify system config & Disable firewall \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+Figure~\ref{fig:framework} illustrates the key insight: binary frameworks force a hard boundary through the gray area, while the ternary framework introduces \ask{} as a buffer zone.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\small}]
+  % Binary framework (top)
+  \node[font=\bfseries] at (5.5, 3.8) {Binary Framework (prior work)};
+
+  % Risk axis
+  \draw[-{Stealth}, thick] (0, 3) -- (11, 3);
+  \node[below, font=\footnotesize] at (0.2, 2.9) {Low risk};
+  \node[below, font=\footnotesize] at (10.8, 2.9) {High risk};
+
+  % Binary regions
+  \fill[actcolor!20] (0, 3.0) rectangle (5.5, 3.5);
+  \fill[refusecolor!20] (5.5, 3.0) rectangle (11, 3.5);
+  \node[actcolor, font=\bfseries] at (2.75, 3.25) {\textsc{act}};
+  \node[refusecolor, font=\bfseries] at (8.25, 3.25) {\textsc{refuse}};
+
+  % Hard boundary with explosion
+  \draw[very thick, red, dashed] (5.5, 2.9) -- (5.5, 3.6);
+  \node[red, font=\scriptsize, above] at (5.5, 3.55) {hard boundary};
+
+  % Gray area annotation
+  \draw[decorate, decoration={brace, amplitude=5pt, mirror}] (3.5, 2.7) -- (7.5, 2.7);
+  \node[font=\scriptsize, below] at (5.5, 2.4) {gray area: forced into wrong decision};
+
+  % Ternary framework (bottom)
+  \node[font=\bfseries] at (5.5, 1.6) {Ternary Framework (ours)};
+
+  \draw[-{Stealth}, thick] (0, 0.8) -- (11, 0.8);
+  \node[below, font=\footnotesize] at (0.2, 0.7) {Low risk};
+  \node[below, font=\footnotesize] at (10.8, 0.7) {High risk};
+
+  % Ternary regions
+  \fill[actcolor!20] (0, 0.8) rectangle (3.5, 1.3);
+  \fill[askcolor!20] (3.5, 0.8) rectangle (7.5, 1.3);
+  \fill[refusecolor!20] (7.5, 0.8) rectangle (11, 1.3);
+  \node[actcolor, font=\bfseries] at (1.75, 1.05) {\textsc{act}};
+  \node[askcolor, font=\bfseries] at (5.5, 1.05) {\textsc{ask}};
+  \node[refusecolor, font=\bfseries] at (9.25, 1.05) {\textsc{refuse}};
+
+  % Soft boundaries
+  \draw[thick, actcolor!60!askcolor] (3.5, 0.7) -- (3.5, 1.4);
+  \draw[thick, askcolor!60!refusecolor] (7.5, 0.7) -- (7.5, 1.4);
+
+\end{tikzpicture}
+\caption{Binary vs.\ ternary decision frameworks. Binary frameworks place a hard boundary through the gray area, forcing over-execution or over-refusal. The ternary framework introduces \ask{} as a buffer zone, enabling safe and usable agent behavior simultaneously.}
+\label{fig:framework}
+\end{figure}
 
 Binary decision-making forces agents into an irreconcilable tradeoff on gray-area actions:
 \begin{itemize}[nosep,leftmargin=*]
@@ -340,17 +393,17 @@ Both models use a binary system prompt offering only \act{} and \refuse{} as opt
 
 \begin{table}[h]
 \centering
-\caption{Binary vs.\ Ternary decision framework. Binary models cannot resolve the SVR--ULR tradeoff.}
+\caption{Binary vs.\ Ternary decision framework. Binary models cannot resolve the SVR--ULR tradeoff regardless of training.}
 \label{tab:binary-vs-ternary}
 \small
-\begin{tabular}{lcccc}
+\begin{tabular}{lccccc}
 \toprule
-\textbf{Metric} & \textbf{Bin-Cons.} & \textbf{Bin-Aggr.} & \textbf{Ternary} \\
+\textbf{Metric} & \textbf{Bin-Base} & \textbf{Bin-Cons.} & \textbf{Bin-Aggr.} & \textbf{Ternary} \\
 \midrule
-Accuracy & 0.510 & 0.520 & \textbf{0.860} \\
-WES ($\downarrow$) & 0.755 & 1.080 & \textbf{0.215} \\
-SVR ($\downarrow$) & 0.164 & 0.397 & \textbf{0.000} \\
-ULR ($\downarrow$) & 0.514 & 0.264 & \textbf{0.014} \\
+Accuracy & 0.520 & 0.510 & 0.520 & \textbf{0.860} \\
+WES ($\downarrow$) & 0.860 & 0.755 & 1.080 & \textbf{0.215} \\
+SVR ($\downarrow$) & 0.247 & 0.164 & 0.397 & \textbf{0.000} \\
+ULR ($\downarrow$) & 0.417 & 0.514 & 0.264 & \textbf{0.014} \\
 \bottomrule
 \end{tabular}
 \end{table}
