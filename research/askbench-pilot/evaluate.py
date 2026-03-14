@@ -163,7 +163,7 @@ _hf_model = None
 _hf_tokenizer = None
 
 
-def call_transformers_local(messages: list[dict], model: str) -> str:
+def call_transformers_local(messages: list[dict], model: str, config: dict = None) -> str:
     """Run inference locally with transformers (no vLLM needed)."""
     global _hf_model, _hf_tokenizer
 
@@ -180,9 +180,11 @@ def call_transformers_local(messages: list[dict], model: str) -> str:
         )
         print(f"  Model loaded.")
 
-    # Disable thinking mode for Qwen 3.5 by adding /no_think
+    config = config or {}
+    thinking = config.get("thinking", False)
+
     chat_messages = list(messages)
-    if "qwen3" in model.lower():
+    if "qwen3" in model.lower() and not thinking:
         chat_messages = [messages[0]] + [{"role": "user", "content": "/no_think\n" + messages[1]["content"]}] + messages[2:]
 
     text = _hf_tokenizer.apply_chat_template(
@@ -190,11 +192,12 @@ def call_transformers_local(messages: list[dict], model: str) -> str:
     )
     inputs = _hf_tokenizer(text, return_tensors="pt").to(_hf_model.device)
 
+    max_tokens = 2048 if thinking else 800
     import torch
     with torch.no_grad():
         outputs = _hf_model.generate(
             **inputs,
-            max_new_tokens=800,
+            max_new_tokens=max_tokens,
             do_sample=False,
             temperature=None,
             top_p=None,
@@ -237,6 +240,11 @@ MODEL_CONFIGS = {
         "backend": "transformers",
         "model_id": "Qwen/Qwen3.5-9B",
     },
+    "qwen3.5-9b-think": {
+        "backend": "transformers",
+        "model_id": "Qwen/Qwen3.5-9B",
+        "thinking": True,
+    },
 }
 
 
@@ -251,7 +259,7 @@ def call_model(messages: list[dict], model_name: str) -> str:
     elif config["backend"] == "vllm":
         return call_vllm_local(messages, config["model_id"])
     elif config["backend"] == "transformers":
-        return call_transformers_local(messages, config["model_id"])
+        return call_transformers_local(messages, config["model_id"], config=config)
     else:
         raise ValueError(f"Unknown backend: {config['backend']}")
 
