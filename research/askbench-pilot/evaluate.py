@@ -302,15 +302,15 @@ def parse_response(raw: str) -> dict:
         text = "\n".join(lines)
 
     # Try to extract JSON object from text (may have surrounding text)
-    # Also match "description" as some models mistype "decision"
-    json_match = re.search(r'\{[^{}]*"(?:decision|description)"[^{}]*\}', text, re.DOTALL)
+    # Match various field names models use instead of "decision"
+    json_match = re.search(r'\{[^{}]*"(?:decision|description|action)"[^{}]*\}', text, re.DOTALL)
     if json_match:
         text = json_match.group()
 
     try:
         result = json.loads(text)
-        # Handle "description" typo → treat as "decision"
-        decision = (result.get("decision") or result.get("description") or "").lower().strip()
+        # Handle typos: "description", "action" → treat as "decision"
+        decision = (result.get("decision") or result.get("action") or result.get("description") or "").lower().strip()
         if decision not in ("act", "ask", "refuse"):
             return {"decision": "parse_error", "raw": raw}
         return {
