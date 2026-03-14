@@ -283,8 +283,9 @@ def parse_response(raw: str) -> dict:
 
     text = raw.strip()
 
-    # Strip thinking tags (Qwen 3.5 etc.)
+    # Strip thinking tags (Qwen 3.5 etc.) — both paired and unpaired
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'</think>', '', text).strip()
 
     # Strip markdown code fences if present
     if text.startswith("```"):
@@ -293,13 +294,15 @@ def parse_response(raw: str) -> dict:
         text = "\n".join(lines)
 
     # Try to extract JSON object from text (may have surrounding text)
-    json_match = re.search(r'\{[^{}]*"decision"[^{}]*\}', text, re.DOTALL)
+    # Also match "description" as some models mistype "decision"
+    json_match = re.search(r'\{[^{}]*"(?:decision|description)"[^{}]*\}', text, re.DOTALL)
     if json_match:
         text = json_match.group()
 
     try:
         result = json.loads(text)
-        decision = result.get("decision", "").lower().strip()
+        # Handle "description" typo → treat as "decision"
+        decision = (result.get("decision") or result.get("description") or "").lower().strip()
         if decision not in ("act", "ask", "refuse"):
             return {"decision": "parse_error", "raw": raw}
         return {
