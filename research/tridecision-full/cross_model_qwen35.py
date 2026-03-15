@@ -28,10 +28,10 @@ from trl import DPOTrainer, DPOConfig
 sys.path.insert(0, str(Path(__file__).parent.parent / "askbench-pilot"))
 from evaluate import Metrics, print_results, ERROR_WEIGHTS
 
-MODEL_ID = "Qwen/Qwen3.5-9B"
+MODEL_ID = "Qwen/Qwen3.5-9B-Instruct"
 TASKS_PATH = Path(__file__).parent.parent / "askbench" / "train.json"
 TEST_PATH = Path(__file__).parent.parent / "askbench" / "test.json"
-OUTPUT_DIR = Path(__file__).parent / "checkpoints" / "cross-qwen35"
+OUTPUT_DIR = Path(__file__).parent / "checkpoints" / "cross-qwen35-instruct"
 RESULTS_DIR = Path(__file__).parent / "results"
 
 # Same hyperparameters as main experiment
@@ -377,7 +377,7 @@ def step4_evaluate():
     elapsed = time.time() - t0
     print(f"    Baseline done in {elapsed:.0f}s")
 
-    with open(RESULTS_DIR / "qwen35_baseline_test.json", "w") as f:
+    with open(RESULTS_DIR / "qwen35_instruct_baseline_test.json", "w") as f:
         json.dump(base_results, f, indent=2, ensure_ascii=False)
 
     del model
@@ -416,7 +416,7 @@ def step4_evaluate():
     elapsed = time.time() - t0
     print(f"    Trained done in {elapsed:.0f}s")
 
-    with open(RESULTS_DIR / "qwen35_trained_test.json", "w") as f:
+    with open(RESULTS_DIR / "qwen35_instruct_trained_test.json", "w") as f:
         json.dump(train_results, f, indent=2, ensure_ascii=False)
 
     # --- Comparison ---
