@@ -130,8 +130,8 @@ def parse_response(raw):
         return {"decision": "parse_error", "raw": raw}
 
 
-def generate(model, tokenizer, messages, max_new_tokens=800):
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+def generate(model, tokenizer, messages, max_new_tokens=300):
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     with torch.no_grad():
         outputs = model.generate(
