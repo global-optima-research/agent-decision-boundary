@@ -28,7 +28,7 @@ from trl import DPOTrainer, DPOConfig
 sys.path.insert(0, str(Path(__file__).parent.parent / "askbench-pilot"))
 from evaluate import Metrics, print_results, ERROR_WEIGHTS
 
-MODEL_ID = "Qwen/Qwen3.5-9B-Instruct"
+MODEL_ID = "Qwen/Qwen3.5-9B"
 TASKS_PATH = Path(__file__).parent.parent / "askbench" / "train.json"
 TEST_PATH = Path(__file__).parent.parent / "askbench" / "test.json"
 OUTPUT_DIR = Path(__file__).parent / "checkpoints" / "cross-qwen35-instruct"
@@ -105,8 +105,11 @@ def format_task(task):
 def parse_response(raw):
     text = raw.strip()
     # Strip thinking tags (Qwen 3.5 uses <think>)
+    # Case 1: full <think>...</think> block
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-    text = re.sub(r'</think>', '', text).strip()
+    # Case 2: missing <think> opener — strip everything before </think>
+    if '</think>' in text:
+        text = text.split('</think>')[-1].strip()
 
     if text.startswith("```"):
         lines = text.split("\n")
@@ -127,7 +130,7 @@ def parse_response(raw):
         return {"decision": "parse_error", "raw": raw}
 
 
-def generate(model, tokenizer, messages, max_new_tokens=300):
+def generate(model, tokenizer, messages, max_new_tokens=800):
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     with torch.no_grad():
